@@ -4,9 +4,12 @@ use datafusion::{
     arrow::datatypes::SchemaRef,
     common::Statistics,
     error::Result,
-    logical_expr::LogicalPlan,
+    logical_expr::{LogicalPlan, UserDefinedLogicalNode},
     physical_plan::{metrics::MetricsSet, PhysicalExpr, SendableRecordBatchStream},
-    sql::{sqlparser::ast, unparser::dialect::Dialect},
+    sql::{
+        sqlparser::ast,
+        unparser::{dialect::Dialect, extension_unparser::UserDefinedLogicalNodeUnparser},
+    },
 };
 use std::sync::Arc;
 
@@ -40,6 +43,21 @@ pub trait SQLExecutor: Sync + Send {
     /// Returns an AST analyzer specific for this engine to modify the AST before execution
     fn ast_analyzer(&self) -> Option<AstAnalyzer> {
         None
+    }
+
+    /// Returns whether a sub-plan containing the extension node `node` can be executed
+    /// by this engine.
+    ///
+    /// Every node for which this returns `true` must be unparsed by one of
+    /// [`Self::extension_unparsers`]. Returns `false` by default.
+    fn supports_extension_node(&self, node: &dyn UserDefinedLogicalNode) -> bool {
+        let _ = node;
+        false
+    }
+
+    /// Returns the unparsers used to convert extension nodes to SQL for this engine.
+    fn extension_unparsers(&self) -> Vec<Arc<dyn UserDefinedLogicalNodeUnparser>> {
+        Vec::new()
     }
 
     /// Execute a SQL query.
