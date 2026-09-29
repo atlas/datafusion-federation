@@ -18,7 +18,7 @@ use datafusion::{
     config::ConfigOptions,
     error::{DataFusionError, Result},
     execution::{context::SessionState, TaskContext},
-    logical_expr::{Extension, LogicalPlan},
+    logical_expr::{Extension, LogicalPlan, UserDefinedLogicalNode},
     optimizer::{optimizer::Optimizer, OptimizerConfig, OptimizerRule},
     physical_expr::EquivalenceProperties,
     physical_plan::{
@@ -71,6 +71,10 @@ impl FederationProvider for SQLFederationProvider {
 
     fn optimizer(&self) -> Option<Arc<Optimizer>> {
         Some(self.optimizer.clone())
+    }
+
+    fn supports_extension_node(&self, node: &dyn UserDefinedLogicalNode) -> bool {
+        self.executor.supports_extension_node(node)
     }
 }
 
@@ -227,7 +231,9 @@ impl VirtualExecutionPlan {
     }
 
     fn plan_to_statement(&self, plan: &LogicalPlan) -> Result<Statement> {
-        Unparser::new(self.executor.dialect().as_ref()).plan_to_sql(plan)
+        Unparser::new(self.executor.dialect().as_ref())
+            .with_extension_unparsers(self.executor.extension_unparsers())
+            .plan_to_sql(plan)
     }
 }
 
