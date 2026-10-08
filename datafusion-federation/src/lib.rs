@@ -13,6 +13,7 @@ use std::{
 
 use datafusion::{
     execution::session_state::{SessionState, SessionStateBuilder},
+    logical_expr::UserDefinedLogicalNode,
     optimizer::{optimizer::Optimizer, OptimizerRule},
 };
 
@@ -65,6 +66,16 @@ pub trait FederationProvider: Send + Sync {
     // Returns an optimizer that can cut out part of the plan
     // to federate it.
     fn optimizer(&self) -> Option<Arc<Optimizer>>;
+
+    /// Returns whether a sub-plan containing the extension node `node` can be
+    /// federated to this provider.
+    ///
+    /// If it returns `false`, the inputs of `node` are federated separately and `node`
+    /// remains in the local plan. Returns `true` by default.
+    fn supports_extension_node(&self, node: &dyn UserDefinedLogicalNode) -> bool {
+        let _ = node;
+        true
+    }
 }
 
 impl fmt::Display for dyn FederationProvider {

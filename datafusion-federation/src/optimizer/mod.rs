@@ -78,6 +78,21 @@ impl FederationOptimizerRule {
             Ok(sole_provider.check_recursion())
         })?;
 
+        // A plan containing an extension node the provider does not support cannot be
+        // federated as a whole.
+        if let ScanResult::Distinct(provider) = &sole_provider {
+            let unsupported = plan.exists(|p| {
+                Ok(matches!(
+                    p,
+                    LogicalPlan::Extension(Extension { node })
+                        if !provider.supports_extension_node(node.as_ref())
+                ))
+            })?;
+            if unsupported {
+                return Ok(ScanResult::Ambiguous);
+            }
+        }
+
         Ok(sole_provider)
     }
 
@@ -178,6 +193,16 @@ impl FederationOptimizerRule {
         input_results.iter().for_each(|(_, scan_result)| {
             sole_provider.merge(scan_result.clone());
         });
+
+        // An extension node the provider does not support is not federated; its inputs
+        // are federated individually below.
+        if let LogicalPlan::Extension(Extension { ref node }) = plan {
+            if let ScanResult::Distinct(provider) = &sole_provider {
+                if !provider.supports_extension_node(node.as_ref()) {
+                    sole_provider = ScanResult::Ambiguous;
+                }
+            }
+        }
 
         if sole_provider.is_none() {
             // No providers found
