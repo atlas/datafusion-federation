@@ -417,10 +417,19 @@ impl ExecutionPlan for VirtualExecutionPlan {
 
     fn handle_child_pushdown_result(
         &self,
-        _phase: FilterPushdownPhase,
+        phase: FilterPushdownPhase,
         child_pushdown_result: ChildPushdownResult,
         _config: &ConfigOptions,
     ) -> Result<FilterPushdownPropagation<Arc<dyn ExecutionPlan>>> {
+        // Only dynamic filters, pushed in the `Post` phase, are accepted: an executor
+        // may ignore the filters it receives (see `SQLExecutor::execute`).
+        if phase == FilterPushdownPhase::Pre {
+            return Ok(FilterPushdownPropagation {
+                filters: vec![PushedDown::No; child_pushdown_result.parent_filters.len()],
+                updated_node: None,
+            });
+        }
+
         let parent_filters: Vec<_> = child_pushdown_result
             .clone()
             .parent_filters
@@ -872,5 +881,53 @@ mod tests {
         assert_eq!(rewrite_calls.load(Ordering::SeqCst), 1);
 
         Ok(())
+    }
+
+    /// A filter offered to a federated scan, as the physical `FilterPushdown` rule
+    /// would in `phase`.
+    fn offer_filter(
+        phase: FilterPushdownPhase,
+    ) -> FilterPushdownPropagation<Arc<dyn ExecutionPlan>> {
+        use datafusion::logical_expr::{EmptyRelation, LogicalPlan};
+        use datafusion::physical_expr::expressions::lit;
+        use datafusion::physical_plan::filter_pushdown::ChildFilterPushdownResult;
+
+        let plan = LogicalPlan::EmptyRelation(EmptyRelation {
+            produce_one_row: false,
+            schema: Arc::new(datafusion::common::DFSchema::empty()),
+        });
+        let executor = Arc::new(TestExecutor {
+            compute_context: "filters".into(),
+        });
+        let scan =
+            VirtualExecutionPlan::new(plan, executor, Statistics::new_unknown(&Schema::empty()));
+
+        let offered = ChildPushdownResult {
+            parent_filters: vec![ChildFilterPushdownResult {
+                filter: lit(true),
+                child_results: vec![],
+            }],
+            self_filters: vec![],
+        };
+        scan.handle_child_pushdown_result(phase, offered, &ConfigOptions::default())
+            .unwrap()
+    }
+
+    #[test]
+    fn a_static_filter_is_left_to_its_filter_exec() {
+        let result = offer_filter(FilterPushdownPhase::Pre);
+        assert!(matches!(result.filters.as_slice(), [PushedDown::No]));
+        assert!(result.updated_node.is_none());
+    }
+
+    #[test]
+    fn a_dynamic_filter_is_handed_to_the_executor() {
+        let result = offer_filter(FilterPushdownPhase::Post);
+        assert!(matches!(result.filters.as_slice(), [PushedDown::Yes]));
+        let node = result.updated_node.expect("the filter is kept");
+        let node = (node.as_ref() as &dyn Any)
+            .downcast_ref::<VirtualExecutionPlan>()
+            .unwrap();
+        assert_eq!(node.filters.len(), 1);
     }
 }
