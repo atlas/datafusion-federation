@@ -18,6 +18,16 @@ use crate::{
 
 use scan_result::ScanResult;
 
+/// Whether one of `plan`'s own expressions is one `provider` cannot evaluate. A table
+/// scan's are its filters, which the provider is asked to take separately.
+fn unsupported_expression(plan: &LogicalPlan, provider: &dyn FederationProvider) -> bool {
+    !matches!(plan, LogicalPlan::TableScan(_))
+        && plan
+            .expressions()
+            .iter()
+            .any(|expr| !provider.supports_expression(expr))
+}
+
 /// An optimizer rule to identifying sub-plans to federate
 ///
 /// The optimizer logic walks over the plan, look for the largest subtrees that only have
@@ -78,15 +88,15 @@ impl FederationOptimizerRule {
             Ok(sole_provider.check_recursion())
         })?;
 
-        // A plan containing an extension node the provider does not support cannot be
-        // federated as a whole.
+        // A plan containing an extension node, or an expression, the provider does not
+        // support cannot be federated as a whole.
         if let ScanResult::Distinct(provider) = &sole_provider {
             let unsupported = plan.exists(|p| {
                 Ok(matches!(
                     p,
                     LogicalPlan::Extension(Extension { node })
                         if !provider.supports_extension_node(node.as_ref())
-                ))
+                ) || unsupported_expression(p, provider.as_ref()))
             })?;
             if unsupported {
                 return Ok(ScanResult::Ambiguous);
@@ -194,13 +204,16 @@ impl FederationOptimizerRule {
             sole_provider.merge(scan_result.clone());
         });
 
-        // An extension node the provider does not support is not federated; its inputs
-        // are federated individually below.
-        if let LogicalPlan::Extension(Extension { ref node }) = plan {
-            if let ScanResult::Distinct(provider) = &sole_provider {
-                if !provider.supports_extension_node(node.as_ref()) {
-                    sole_provider = ScanResult::Ambiguous;
-                }
+        // An extension node the provider does not support, or a node with an expression it
+        // does not, is not federated; its inputs are federated individually below.
+        if let ScanResult::Distinct(provider) = &sole_provider {
+            let unsupported_node = matches!(
+                plan,
+                LogicalPlan::Extension(Extension { node })
+                    if !provider.supports_extension_node(node.as_ref())
+            );
+            if unsupported_node || unsupported_expression(plan, provider.as_ref()) {
+                sole_provider = ScanResult::Ambiguous;
             }
         }
 

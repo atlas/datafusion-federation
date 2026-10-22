@@ -4,7 +4,7 @@ use datafusion::{
     arrow::datatypes::SchemaRef,
     common::Statistics,
     error::Result,
-    logical_expr::{LogicalPlan, UserDefinedLogicalNode},
+    logical_expr::{Expr, LogicalPlan, UserDefinedLogicalNode},
     physical_plan::{metrics::MetricsSet, PhysicalExpr, SendableRecordBatchStream},
     sql::{
         sqlparser::ast,
@@ -53,6 +53,15 @@ pub trait SQLExecutor: Sync + Send {
     fn supports_extension_node(&self, node: &dyn UserDefinedLogicalNode) -> bool {
         let _ = node;
         false
+    }
+
+    /// Returns whether this engine can evaluate `expr`, one of a plan node's expressions,
+    /// as it is unparsed: whether it has every function the expression calls, say. A node
+    /// with an expression it cannot evaluate remains in the local plan, and its inputs are
+    /// federated. Returns `true` by default.
+    fn supports_expression(&self, expr: &Expr) -> bool {
+        let _ = expr;
+        true
     }
 
     /// Returns the unparsers used to convert extension nodes to SQL for this engine.

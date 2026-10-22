@@ -13,7 +13,7 @@ use std::{
 
 use datafusion::{
     execution::session_state::{SessionState, SessionStateBuilder},
-    logical_expr::UserDefinedLogicalNode,
+    logical_expr::{Expr, UserDefinedLogicalNode},
     optimizer::{optimizer::Optimizer, OptimizerRule},
 };
 
@@ -74,6 +74,17 @@ pub trait FederationProvider: Send + Sync {
     /// remains in the local plan. Returns `true` by default.
     fn supports_extension_node(&self, node: &dyn UserDefinedLogicalNode) -> bool {
         let _ = node;
+        true
+    }
+
+    /// Returns whether `expr`, one of a plan node's expressions, can be evaluated by this
+    /// provider.
+    ///
+    /// If it returns `false` for any of a node's expressions, the node remains in the
+    /// local plan and its inputs are federated separately, as for an extension node it
+    /// does not support. Returns `true` by default.
+    fn supports_expression(&self, expr: &Expr) -> bool {
+        let _ = expr;
         true
     }
 }

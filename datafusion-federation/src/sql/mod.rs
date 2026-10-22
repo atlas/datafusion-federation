@@ -19,7 +19,7 @@ use datafusion::{
     config::ConfigOptions,
     error::{DataFusionError, Result},
     execution::TaskContext,
-    logical_expr::{Extension, LogicalPlan, UserDefinedLogicalNode},
+    logical_expr::{Expr, Extension, LogicalPlan, UserDefinedLogicalNode},
     optimizer::{optimizer::Optimizer, OptimizerConfig, OptimizerRule},
     physical_expr::EquivalenceProperties,
     physical_plan::{
@@ -77,6 +77,10 @@ impl FederationProvider for SQLFederationProvider {
 
     fn supports_extension_node(&self, node: &dyn UserDefinedLogicalNode) -> bool {
         self.executor.supports_extension_node(node)
+    }
+
+    fn supports_expression(&self, expr: &Expr) -> bool {
+        self.executor.supports_expression(expr)
     }
 }
 
