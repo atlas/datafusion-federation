@@ -8,7 +8,10 @@ use datafusion::{
     common::tree_node::{Transformed, TreeNode, TreeNodeRecursion},
     datasource::source_as_provider,
     error::Result,
-    logical_expr::{Expr, Extension, LogicalPlan, Projection, TableScan, TableSource},
+    logical_expr::{
+        utils::{conjunction, split_conjunction_owned},
+        Expr, Extension, Filter, LogicalPlan, Projection, TableScan, TableSource,
+    },
     optimizer::optimizer::{Optimizer, OptimizerConfig, OptimizerRule},
 };
 
@@ -47,9 +50,10 @@ impl OptimizerRule for FederationOptimizerRule {
         plan: LogicalPlan,
         config: &dyn OptimizerConfig,
     ) -> Result<Transformed<LogicalPlan>> {
-        match self.optimize_plan_recursively(&plan, true, config)? {
+        let split = self.split_filters(plan)?;
+        match self.optimize_plan_recursively(&split.data, true, config)? {
             (Some(optimized_plan), _) => Ok(Transformed::yes(optimized_plan)),
-            (None, _) => Ok(Transformed::no(plan)),
+            (None, _) => Ok(Transformed::new_transformed(split.data, split.transformed)),
         }
     }
 
@@ -68,6 +72,30 @@ impl FederationOptimizerRule {
     /// Creates a new [`FederationOptimizerRule`]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Splits each filter over a single provider's sub-plan whose predicate has conjuncts
+    /// the provider supports and conjuncts it does not into two: the supported ones below,
+    /// federated with the input, and the others above, kept local. The rows are the same:
+    /// a filter keeps those every conjunct holds for.
+    fn split_filters(&self, plan: LogicalPlan) -> Result<Transformed<LogicalPlan>> {
+        plan.transform_up(|node| {
+            let LogicalPlan::Filter(filter) = &node else {
+                return Ok(Transformed::no(node));
+            };
+            let ScanResult::Distinct(provider) = self.scan_plan_recursively(&filter.input)? else {
+                return Ok(Transformed::no(node));
+            };
+            let (sent, kept): (Vec<_>, Vec<_>) = split_conjunction_owned(filter.predicate.clone())
+                .into_iter()
+                .partition(|conjunct| provider.supports_expression(conjunct));
+            let (Some(sent), Some(kept)) = (conjunction(sent), conjunction(kept)) else {
+                return Ok(Transformed::no(node));
+            };
+            let lower = Filter::try_new(sent, Arc::clone(&filter.input))?;
+            let upper = Filter::try_new(kept, Arc::new(LogicalPlan::Filter(lower)))?;
+            Ok(Transformed::yes(LogicalPlan::Filter(upper)))
+        })
     }
 
     /// Scans a plan to see if it belongs to a single [`FederationProvider`].

@@ -2,8 +2,8 @@
 //!
 //! A plan node with an expression the executor does not support
 //! (`SQLExecutor::supports_expression`) remains in the local plan, and its inputs are
-//! federated, as for an extension node it does not support. Here the remote is said to
-//! lack `upper`.
+//! federated, as for an extension node it does not support; a filter's conjuncts it does
+//! support are still federated. Here the remote is said to lack one function.
 
 #![cfg(feature = "sql")]
 
@@ -26,26 +26,32 @@ use support::{
     overwrite_default_schema, recorded_sql, remote_ctx, schema_provider, RecordingSQLExecutor,
 };
 
-/// A remote without `upper`.
-struct WithoutUpper(RecordingSQLExecutor);
+/// A remote without the function named.
+struct Without(&'static str, RecordingSQLExecutor);
 
 #[async_trait]
-impl SQLExecutor for WithoutUpper {
+impl SQLExecutor for Without {
     fn name(&self) -> &str {
-        self.0.name()
+        self.1.name()
     }
 
     fn compute_context(&self) -> Option<String> {
-        self.0.compute_context()
+        self.1.compute_context()
     }
 
     fn dialect(&self) -> Arc<dyn Dialect> {
-        self.0.dialect()
+        self.1.dialect()
     }
 
     fn supports_expression(&self, expr: &Expr) -> bool {
         !expr
-            .exists(|e| Ok(matches!(e, Expr::ScalarFunction(f) if f.name() == "upper")))
+            .exists(|e| {
+                Ok(match e {
+                    Expr::ScalarFunction(f) => f.name() == self.0,
+                    Expr::AggregateFunction(f) => f.func.name() == self.0,
+                    _ => false,
+                })
+            })
             .unwrap()
     }
 
@@ -55,15 +61,15 @@ impl SQLExecutor for WithoutUpper {
         schema: SchemaRef,
         filters: &[Arc<dyn PhysicalExpr>],
     ) -> Result<SendableRecordBatchStream> {
-        self.0.execute(query, schema, filters)
+        self.1.execute(query, schema, filters)
     }
 
     async fn table_names(&self) -> Result<Vec<String>> {
-        self.0.table_names().await
+        self.1.table_names().await
     }
 
     async fn get_table_schema(&self, table_name: &str) -> Result<SchemaRef> {
-        self.0.get_table_schema(table_name).await
+        self.1.get_table_schema(table_name).await
     }
 }
 
@@ -120,7 +126,7 @@ async fn a_projection_the_remote_cannot_evaluate_is_computed_locally() {
     let executor = RecordingSQLExecutor::new("sqlite", "sqlite_exec", ctx);
     let queries = executor.queries();
 
-    let (plan, values) = run(Arc::new(WithoutUpper(executor)), PROJECTED).await;
+    let (plan, values) = run(Arc::new(Without("upper", executor)), PROJECTED).await;
 
     assert_eq!(values, ["B", "C"]);
     let projection = plan
@@ -144,7 +150,7 @@ async fn a_filter_the_remote_cannot_evaluate_is_computed_locally() {
     let executor = RecordingSQLExecutor::new("sqlite", "sqlite_exec", ctx);
     let queries = executor.queries();
 
-    let (plan, values) = run(Arc::new(WithoutUpper(executor)), FILTERED).await;
+    let (plan, values) = run(Arc::new(Without("upper", executor)), FILTERED).await;
 
     assert_eq!(values, ["b"]);
     assert!(
@@ -153,4 +159,29 @@ async fn a_filter_the_remote_cannot_evaluate_is_computed_locally() {
     );
     let sql = recorded_sql(&queries);
     assert!(!sql.contains("upper"), "upper is not sent: {sql}");
+    assert!(
+        sql.contains("bar > 1"),
+        "the conjunct it supports is: {sql}"
+    );
+}
+
+#[tokio::test]
+async fn an_aggregate_the_remote_cannot_evaluate_is_computed_locally() {
+    let ctx = remote_ctx("test", "test.csv").await;
+    let executor = RecordingSQLExecutor::new("sqlite", "sqlite_exec", ctx);
+    let queries = executor.queries();
+
+    let (plan, values) = run(
+        Arc::new(Without("max", executor)),
+        "SELECT max(foo) AS m FROM test WHERE bar > 1",
+    )
+    .await;
+
+    assert_eq!(values, ["c"]);
+    assert!(
+        plan.find("max(").unwrap() < plan.find("Federated").unwrap(),
+        "the aggregate is computed here:\n{plan}"
+    );
+    let sql = recorded_sql(&queries);
+    assert!(sql.contains("bar > 1") && !sql.contains("max("), "{sql}");
 }
